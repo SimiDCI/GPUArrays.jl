@@ -20,8 +20,12 @@ function test(N)
   @time broadcast!(*, cl_out, cl_a, cl_b);
   @test out == Array(cl_out)
 
-  @test min.(a, b) == Array(min.(cl_a, cl_b))
+  @test broadcast(min, a, b) == Array(broadcast(min, cl_a, cl_b))
+  println("-----------------")
 
 end
 
-test(10^5)
+test(10^6)
+test(10^6)
+test(10^6)
+test(10^6)

@@ -1,6 +1,7 @@
 module CLBackend
 using ..GPUArrays
 using OpenCL
+using Compat
 const cl = OpenCL
 import GPUArrays: buffer, create_buffer, Context, GPUArray
 
@@ -27,23 +28,26 @@ end
 typealias CLArray{T, N} GPUArray{cl.Buffer{T}, T, N, CLContext}
 
 # Constructor
-function (::Type{Array}){T, N}(A::CLArray{T, N})
+@compat function (::Type{Array}){T, N}(A::CLArray{T, N})
 	Array{T,N}(A)
 end
 
-function (::Type{Array{T, N}}){T, N}(A::CLArray{T, N})
-	hA = similar(Array{T, N}, size(A))
-	copy!(A.context.queue, hA, buffer(A))
+@compat function (::Type{Array{T, N}}){T, N}(A::CLArray{T, N})
+	hA = Array(T, size(A))
+	cl.copy!(A.context.queue, hA, buffer(A))
 	hA
 end
 
 function create_buffer{T, N}(ctx::CLContext, A::AbstractArray{T, N}, flag = :rw)
 	cl.Buffer(T, ctx.context, (flag, :copy), hostbuf=A)
 end
-function CLArray(A::AbstractArray, flag = :rw)
+@compat function (::Type{CLArray{T, N}}){T, N}(A::AbstractArray, flag = :rw)
 	ctx = compute_context::CLContext
-	buf = create_buffer(ctx, A, flag)
+	buf = create_buffer(ctx, convert(Array{T,N}, A), flag)
 	GPUArray(buf, size(A), ctx)
+end
+@compat function (::Type{CLArray}){T, N}(A::AbstractArray{T, N}, flag = :rw)
+	CLArray{T, N}(A)
 end
 
 function Base.similar{T, N}(::Type{CLArray{T, N}}, sz::Tuple, flag = :rw)
@@ -58,8 +62,7 @@ const cl_type_map = Dict(
 	Int32 => "int"
 )
 
-const cl_fun_map = Dict{Type, String}(
-)
+const cl_fun_map = Dict()
 
 function type_expr(typ, changes=false)
 	(cltype_prefix(typ, changes) *
@@ -94,15 +97,20 @@ end
 
 
 function is_infix(x)
-	isa(+, x) ||
-	isa(*, x) ||
-	isa(-, x) ||
-	isa(/, x) ||
-	isa(==, x)
+	(+) == (x) ||
+	(*) == (x) ||
+	(-) == (x) ||
+	(/) == (x) ||
+	(==) == (x)
 end
-
+function get_function_name(f)
+	get!(cl_fun_map, f) do
+		#replace(string(op.name.name), "#", "") # LOL
+		f.env.name
+	end
+end
 function apply_expr(op, a, b)
-	fun = replace(string(op.name.name), "#", "") # LOL
+	fun = get_function_name(op)
 	if is_infix(op)
 		return "$a $fun $b"
 	else
@@ -132,9 +140,9 @@ function map_kernel{T1, T2, T3}(op, out::T1, A::T2, B::T3)
 			vstore$(GRID)($(apply_expr(op, "value1a", "value1b")), i, out);
 		}
 		"""
-		# println(source)
+		println(source)
 		program = cl.Program(ctx.context, source=source)
-	  cl.build!(program)
+	  	cl.build!(program)
 		cl.Kernel(program, "map_kernel"), source
 	end
 	kernel
@@ -152,26 +160,24 @@ function Base.broadcast{T1, T2, N}(op, A::CLArray{T1, N}, B::CLArray{T2, N})
 	out
 end
 
-@generated function Base.broadcast!{T1, T2, T3, N}(
+function Base.broadcast!{T1, T2, T3, N}(
 		op, out::CLArray{T1, N}, A::CLArray{T2, N}, B::CLArray{T3, N}
 	)
-	kernel = map_kernel(op, out, A, B)
+	kernel = map_kernel(op, typeof(out), typeof(A), typeof(B))::cl.Kernel
 	ret_event = Array(cl.CL_event, 1)
 	q = compute_context.queue::cl.CmdQueue
-	quote
-		# moved this code out of OpenCL.jl to remove performances hurdles
-		cl.set_args!($(kernel), buffer(out), buffer(A), buffer(B))
-		gsize, lsize = workgroup_heuristic(broadcast!, out, A, B)
-	    goffset = C_NULL
-	    n_events = cl.cl_uint(0)
-	    wait_event_ids = C_NULL
-	    cl.api.clEnqueueNDRangeKernel(
-			$(q.id), $(kernel.id), cl.cl_uint(1), goffset, gsize, lsize,
-	    	n_events, wait_event_ids, $ret_event
-		)
-	    cl.finish($(q))
-		nothing
-	end
+	# moved this code out of OpenCL.jl to remove performances hurdles
+	cl.set_args!(kernel, buffer(out), buffer(A), buffer(B))
+	gsize, lsize = workgroup_heuristic(broadcast!, out, A, B)
+    goffset = C_NULL
+    n_events = cl.cl_uint(0)
+    wait_event_ids = C_NULL
+    cl.api.clEnqueueNDRangeKernel(
+		q.id, kernel.id, cl.cl_uint(1), goffset, gsize, lsize,
+    	n_events, wait_event_ids, ret_event
+	)
+    cl.finish(q)
+	nothing
 end
 
 end #CLBackend
