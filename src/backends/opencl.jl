@@ -1,7 +1,8 @@
 module CLBackend
 using ..GPUArrays
+using Compat
 using OpenCL
-const cl = OpenCL
+
 import GPUArrays: buffer, create_buffer, Context, GPUArray
 
 immutable CLContext <: Context
@@ -27,11 +28,11 @@ end
 typealias CLArray{T, N} GPUArray{cl.Buffer{T}, T, N, CLContext}
 
 # Constructor
-function (::Type{Array}){T, N}(A::CLArray{T, N})
+@compat function (::Type{Array}){T, N}(A::CLArray{T, N})
 	Array{T,N}(A)
 end
 
-function (::Type{Array{T, N}}){T, N}(A::CLArray{T, N})
+@compat function (::Type{Array{T, N}}){T, N}(A::CLArray{T, N})
 	hA = similar(Array{T, N}, size(A))
 	copy!(A.context.queue, hA, buffer(A))
 	hA
